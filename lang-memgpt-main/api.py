@@ -1,3 +1,5 @@
+# lang-memgpt-main/api.py
+
 import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +11,13 @@ import asyncio
 from lang_memgpt.graph import process_chat
 from lang_memgpt import _schemas as schemas
 import os
+import sys
 
+logging.basicConfig(
+    level=logging.DEBUG,  # Use DEBUG to capture all logs
+    stream=sys.stdout,    # Ensure logs are sent to stdout
+    format="%(asctime)s %(levelname)s %(name)s %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
@@ -43,6 +51,7 @@ class ChatRequest(BaseModel):
 async def chat(request: ChatRequest):
     try:
         logger.info(f"Received chat request: messages={request.messages} configurable={request.configurable}")
+        print(f"Received chat request: messages={request.messages} configurable={request.configurable}", flush=True)
         # Create config as a regular dict
         config: schemas.GraphConfig = {
             "configurable": {
@@ -56,14 +65,18 @@ async def chat(request: ChatRequest):
             config=config
         )
         
+        # print(flush=True)
+        # print(f'response={response}', flush=True)
+        # print(flush=True)
         if response and response.get("messages"):
             last_message = response["messages"][-1]
-            return {"response": last_message.content}
+            # print(f'Returning response: {last_message}', flush=True)
+            return {"response": last_message['content']}
         else:
             return {"response": "I apologize, but I couldn't generate a proper response."}
             
     except Exception as e:
-        logger.error(f"Error in chat: {str(e)}")
+        logger.error(f"[api.py] Error in chat: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error: {str(e)}"
