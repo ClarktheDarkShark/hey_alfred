@@ -60,4 +60,6 @@ async def get_taf_data(
                 results[station] = f"Error: {str(e)}"
 
     # Return the compiled results
+    # print(f'---TAF---', flush=True)
+    # print(f'results:\n\n{results}', flush=True)
     return results

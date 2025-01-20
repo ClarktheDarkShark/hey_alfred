@@ -19,7 +19,7 @@ export const sendMessage = async (messages, configurable = {}) => {
         })),
         configurable: {
           user_id: 'default-user',
-          model: 'gpt-4',
+          model: 'gpt-4o',
           ...configurable
         }
       }),
