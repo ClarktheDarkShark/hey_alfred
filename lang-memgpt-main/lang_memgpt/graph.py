@@ -5,12 +5,15 @@ This module implements an agent with long-term memory capabilities using LangGra
 The agent can store, retrieve, and use memories to enhance its interactions with users.
 
 Key Components:
-1. Memory Types: Core (always available) and Recall (contextual/semantic)
-2. Tools: For saving and retrieving memories + performing other tasks.
-3. Memory Vector Database: for recall memory. Uses Pinecone for core and recall memories.
-4. RAG Vector Database: for querying PDF and CSV documents. Uses Chroma Vector Database.
+1. Memory Types: Core (always available) and Recall (contextual/semantic).
+2. Tools: For saving and retrieving memories + performing other tasks (METAR, TAF, etc.).
+3. Memory Vector Database: Uses Pinecone for both core and recall memories.
+4. RAG Vector Database: For querying PDF and CSV documents. Uses Chroma or other vector DB.
 
-Configuration: Requires Pinecone and OpenAI API keys (see README for setup)
+Configuration: Requires Pinecone and OpenAI API keys (see README for setup).
+
+This code integrates the original multi-step RAG pipeline with a simplified UI-facing
+`process_chat` function, ensuring both the TAF tool and the entire RAG flow are available.
 """
 
 from __future__ import annotations
@@ -38,10 +41,25 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 from typing_extensions import Literal
 
+# -- Import the RAG pipeline utilities from your existing codebase
+from lang_memgpt.RAG_Structure.route_question import route_question
+from lang_memgpt.RAG_Structure.grade_generation import grade_generation_grounded_in_documents_and_question
+from lang_memgpt.RAG_Structure.decision_logic import decide_to_generate
+from lang_memgpt.RAG_Structure import (
+    ingest_data,
+    retrieve,              # Main entry point tool for RAG
+    grade_documents,       # Internal node for grading documents
+    generate,              # Internal node for generating output
+    web_search,            # Internal node for web search
+)
+
+# -- Local modules
 from lang_memgpt import _constants as constants
 from lang_memgpt import _schemas as schemas
 from lang_memgpt import _settings as settings
 from lang_memgpt import _utils as utils
+
+# -- Tools
 from lang_memgpt.tools import (
     get_metar_data,
     get_taf_data,
@@ -50,8 +68,6 @@ from lang_memgpt.tools import (
     date_time_tool,
     fetch_latest_news
 )
-
-import inspect
 
 logger = logging.getLogger("memory")
 logging.basicConfig(level=logging.DEBUG)
@@ -64,6 +80,11 @@ search_tool = TavilySearchResults(max_results=1)
 tools = [search_tool]
 
 
+#
+# -----------------------------
+#  Memory & Core Tools
+# -----------------------------
+#
 @tool
 async def save_recall_memory(memory: str) -> str:
     """
@@ -205,7 +226,12 @@ def store_core_memory(memory: str, index: Optional[int] = None) -> str:
     return "Memory stored."
 
 
-# Combine all tools
+#
+# -----------------------------
+#  Combine Tools & Prompt
+# -----------------------------
+#
+# Reintroduce the missing RAG tools here as well:
 all_tools = tools + [
     save_recall_memory,
     search_memory,
@@ -215,11 +241,17 @@ all_tools = tools + [
     calculate,
     unit_converter,
     date_time_tool,
-    fetch_latest_news
+    fetch_latest_news,
+    # RAG-related tools:
+    ingest_data,
+    route_question,
+    retrieve,
+    web_search,
+    grade_documents,
+    grade_generation_grounded_in_documents_and_question,
 ]
 
-
-# Prompt template for the agent
+# Build the ChatPromptTemplate
 prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -251,8 +283,8 @@ prompt = ChatPromptTemplate.from_messages(
             " analogies.\n"
             "10. Recall past challenges or successes to inform current"
             " problem-solving.\n"
-            "11. Alfred can also process (i.e., ingest documents), index, and query PDFs, CSVs, Excel, or Word docs"
-            " stored in a dedicated document database for research and analysis.\n"
+            "11. Alfred can also process (i.e., ingest documents), index, and query PDFs, CSVs,"
+            " Excel, or Word docs stored in a dedicated document database for research.\n"
             "12. Use document processing tools to analyze uploaded PDFs or Excel files and"
             " summarize key insights.\n"
             "13. For long or complex queries, break them into smaller parts and retrieve"
@@ -287,6 +319,11 @@ prompt = ChatPromptTemplate.from_messages(
 )
 
 
+#
+# -----------------------------
+#  Agent Function
+# -----------------------------
+#
 async def agent(state: schemas.State, config: RunnableConfig) -> schemas.State:
     """
     Process the current state and generate a response using the LLM.
@@ -324,6 +361,7 @@ async def agent(state: schemas.State, config: RunnableConfig) -> schemas.State:
 
     logger.debug(f"Prediction: {prediction}")
 
+    # Return the new state
     return {
         "messages": prediction,
         "core_memories": core_memories,
@@ -331,6 +369,11 @@ async def agent(state: schemas.State, config: RunnableConfig) -> schemas.State:
     }
 
 
+#
+# -----------------------------
+#  Memory Loader
+# -----------------------------
+#
 def load_memories(state: schemas.State, config: RunnableConfig) -> schemas.State:
     """
     Load core and recall memories for the current conversation.
@@ -366,71 +409,126 @@ def load_memories(state: schemas.State, config: RunnableConfig) -> schemas.State
     }
 
 
-def route_tools(state: schemas.State) -> Literal["tools", "__end__"]:
+#
+# -----------------------------
+#  Router / Tools
+# -----------------------------
+#
+def route_tools(state: schemas.State) -> Literal["tools", "ROUTER", "__end__"]:
     """
-    Route queries to tool usage or end.
+    Decide whether to invoke tools, RAG routing, or end conversation.
 
     Args:
         state: The current state of the conversation.
 
     Returns:
-        "tools" if the conversation triggers tool calls, otherwise "__end__".
+        "tools" if a general tool should be called,
+        "ROUTER" if the route_question node should be triggered,
+        or "__end__" if no tool usage is requested.
     """
     msg = state["messages"][-1]
-    # If the last message includes any tool calls, go to "tools"
+
+    # Check if the query triggers any tool calls
     if getattr(msg, "tool_calls", None):
+        # Example: If specifically "route_question" was called or needed
+        # you could branch to "ROUTER". For example:
+        calls = [tc["name"] for tc in msg.tool_calls]
+        if "route_question" in calls:
+            return "ROUTER"
+        # If "retrieve" is explicitly mentioned:
+        if "retrieve" in calls:
+            return "RETRIEVE"
         return "tools"
-    # Otherwise, end conversation
+
     return END
 
 
-# Build the state graph
+#
+# -----------------------------
+#  Build the Graph
+# -----------------------------
+#
 builder = StateGraph(schemas.State, schemas.GraphConfig)
-
-def ensure_docstring(func):
-    """Inject a default docstring if one is missing."""
-    if not func.__doc__ or func.__doc__.strip() == "":
-        func.__doc__ = "No description provided."
-    return func
-
-# Wrap all tools to ensure they have docstrings
-all_tools = [ensure_docstring(tool) for tool in all_tools]
-print()
-print("all_tools:", all_tools)
-print()
 
 # Add nodes
 builder.add_node("load_memories", load_memories)
 builder.add_node("agent", agent)
 builder.add_node("tools", ToolNode(all_tools))
+builder.add_node("ROUTER", route_question)
+builder.add_node("RETRIEVE", retrieve)
+builder.add_node("GRADE_DOCUMENTS", grade_documents)
+builder.add_node("GENERATE", generate)
+builder.add_node("WEBSEARCH", web_search)
 
 # Edges
 builder.add_edge(START, "load_memories")
 builder.add_edge("load_memories", "agent")
 builder.add_edge("tools", "agent")
+
+# The top-level route_tools decides among "tools", "ROUTER", "__end__"
 builder.add_conditional_edges(
     "agent",
     route_tools,
     {
         "tools": "tools",
+        "ROUTER": "ROUTER",
+        "RETRIEVE": "RETRIEVE",
         "__end__": END,
     }
 )
 
+# RAG flow after "ROUTER"
+builder.add_conditional_edges(
+    "ROUTER",
+    route_question,  # returns "RETRIEVE" or "WEBSEARCH"
+    {
+        "RETRIEVE": "RETRIEVE",
+        "WEBSEARCH": "WEBSEARCH",
+        "__end__": END,  # In case route_question decides there's nothing to do
+    }
+)
+
+builder.add_edge("RETRIEVE", "GRADE_DOCUMENTS")
+builder.add_conditional_edges(
+    "GRADE_DOCUMENTS",
+    decide_to_generate,
+    {
+        "WEBSEARCH": "WEBSEARCH",
+        "GENERATE": "GENERATE",
+    },
+)
+builder.add_conditional_edges(
+    "GENERATE",
+    grade_generation_grounded_in_documents_and_question,
+    {
+        "not supported": "GENERATE",
+        "useful": "agent",
+        "not useful": "WEBSEARCH",
+    },
+)
+builder.add_edge("WEBSEARCH", "GENERATE")
+builder.add_edge("GENERATE", "agent")
+
 # Compile the graph
 memgraph = builder.compile()
 
-# Add a wrapper function for proper input handling
+
+#
+# -----------------------------
+#  Main UI-facing Function
+# -----------------------------
+#
 async def process_chat(messages: List[Dict[str, str]], config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Process chat messages through the memory graph.
 
     Args:
-        messages: A list of message dicts with role/content.
-        config: A dictionary of runtime configuration (e.g., user_id, model).
+        messages: A list of message dicts with role/content. E.g.:
+                  [{"role": "user", "content": "Hello!"}, {...}, ...]
+        config: A dictionary of runtime configuration (e.g., {"user_id": "123", "model": "gpt-4"})
 
     Returns:
-        The final conversation state after processing.
+        The final conversation state after processing (including the final response).
     """
     logger.debug("Entering process_chat function")
     logger.debug(f"Messages: {messages}")
@@ -439,12 +537,17 @@ async def process_chat(messages: List[Dict[str, str]], config: Dict[str, Any]) -
     # Convert raw "role"/"content" messages into typed messages
     formatted_messages = []
     for msg in messages:
-        if msg["role"] == "user":
-            formatted_messages.append(HumanMessage(content=msg["content"]))
-        elif msg["role"] == "assistant":
-            formatted_messages.append(AIMessage(content=msg["content"]))
-        elif msg["role"] == "system":
-            formatted_messages.append(SystemMessage(content=msg["content"]))
+        role = msg["role"]
+        content = msg["content"]
+        if role == "user":
+            formatted_messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            formatted_messages.append(AIMessage(content=content))
+        elif role == "system":
+            formatted_messages.append(SystemMessage(content=content))
+        else:
+            # Fallback if some custom role
+            formatted_messages.append(HumanMessage(content=content))
 
     logger.debug(f"Formatted messages: {formatted_messages}")
 
@@ -456,18 +559,33 @@ async def process_chat(messages: List[Dict[str, str]], config: Dict[str, Any]) -
     }
 
     # Invoke the graph
-    result = await memgraph.ainvoke(
-        input=input_state,
-        config=config
-    )
-
+    result = await memgraph.ainvoke(input=input_state, config=config)
     logger.debug(f"Result: {result}")
+    
+    # `result["messages"]` is typically a list of AIMessage/HumanMessage objects.
+    # Find the content of the last AI message:
+    final_ai_content = ""
+    if "messages" in result and result["messages"]:
+        last_msg = result["messages"][-1]
+        # Attempt to read the content (for AIMessage it should be last_msg.content)
+        final_ai_content = getattr(last_msg, "content", "")
 
-    return result
+    # Return the "response" field so the frontend can do data.response
+    return {"response": final_ai_content}
 
+
+#
+# -----------------------------
+#  Docstring Issue Detector
+# -----------------------------
+#
 import inspect
-from typing import List, Callable
-import logging
+
+def ensure_docstring(func):
+    """Inject a default docstring if one is missing."""
+    if not func.__doc__ or func.__doc__.strip() == "":
+        func.__doc__ = "No description provided."
+    return func
 
 def detect_and_fix_docstring_issues():
     """
@@ -488,11 +606,7 @@ def detect_and_fix_docstring_issues():
 
     for func in functions:
         try:
-            # Skip tools that are decorated/wrapped
-            if not hasattr(func, '__doc__'):
-                continue
-
-            # Get actual function if it's wrapped
+            # If it's decorated/wrapped, get the real function
             while hasattr(func, '__wrapped__'):
                 func = func.__wrapped__
 
@@ -500,18 +614,17 @@ def detect_and_fix_docstring_issues():
             if not docstring:
                 continue
 
-            # Check if docstring has Args section
+            # Basic check for 'Args:' or 'Returns:'
             if 'Args:' not in docstring:
                 continue
 
-            # Safely get parameters section
-            try:
-                args_section = docstring.split('Args:')[1]
-                params_section = args_section.split('Returns:')[0] if 'Returns:' in args_section else args_section
-            except IndexError:
-                continue
+            # Try to parse out the Args: and Returns: sections
+            args_section = docstring.split('Args:')[1]
+            if 'Returns:' in args_section:
+                params_section = args_section.split('Returns:')[0]
+            else:
+                params_section = args_section
 
-            # Parse parameters more safely
             docstring_params = []
             for line in params_section.split('\n'):
                 line = line.strip()
@@ -522,32 +635,28 @@ def detect_and_fix_docstring_issues():
             if not docstring_params:
                 continue
 
-            # Get function signature safely
+            # Check function signature for parameter mismatch
             try:
                 sig = inspect.signature(func)
             except ValueError:
                 continue
 
-            # Fix parameter names if needed
+            # Example fix: if docstring says 'state' but signature uses 'input_state'
             for param in docstring_params:
                 if param not in sig.parameters and param == "state":
-                    try:
-                        fixed_docstring = docstring.replace(
-                            f"{param}:", "input_state:"
-                        ).replace(
-                            f"{param} (dict)", "input_state (dict)"
-                        )
-                        func.__doc__ = fixed_docstring
-                        logger.info(f"Fixed docstring for function: replaced '{param}' with 'input_state'")
-                    except Exception as e:
-                        logger.warning(f"Could not fix docstring: {e}")
+                    fixed_docstring = docstring.replace(
+                        f"{param}:", "input_state:"
+                    ).replace(
+                        f"{param} (dict)", "input_state (dict)"
+                    )
+                    func.__doc__ = fixed_docstring
+                    logger.info(f"Fixed docstring for function: replaced '{param}' with 'input_state'")
 
         except Exception as e:
-            # Log error but continue processing other functions
             logger.warning(f"Skipping docstring check for function: {e}")
             continue
 
-# Don't automatically run validation on module import
-# It will be called explicitly during app startup
+# Wrap all tools in ensure_docstring
+all_tools = [ensure_docstring(t) for t in all_tools]
 
 __all__ = ["memgraph", "process_chat"]

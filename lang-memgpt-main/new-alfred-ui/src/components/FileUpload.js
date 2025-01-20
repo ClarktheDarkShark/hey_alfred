@@ -33,7 +33,7 @@ const FileUpload = ({ onFileUpload }) => {
   };
 
   return (
-    <Box sx={{ mb: 2 }}>
+    <Box sx={{ mb: 2, p: 2 }}>
       <input
         accept=".pdf,.csv,.xlsx,.doc,.docx"
         style={{ display: 'none' }}

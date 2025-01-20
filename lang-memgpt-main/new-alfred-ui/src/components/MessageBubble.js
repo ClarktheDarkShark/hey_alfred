@@ -11,6 +11,7 @@ const StyledPaper = styled(Paper, {
   backgroundColor: isUser ? theme.palette.primary.main : theme.palette.background.paper,
   color: isUser ? theme.palette.primary.contrastText : theme.palette.text.primary,
   borderRadius: theme.spacing(2),
+  textAlign: 'left',  // Add this line to force left alignment
 }));
 
 function MessageBubble({ message, isUser }) {

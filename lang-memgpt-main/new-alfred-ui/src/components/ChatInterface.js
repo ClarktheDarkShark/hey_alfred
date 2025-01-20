@@ -7,11 +7,11 @@ import {
   IconButton,
   Typography,
   Drawer,
+  Toolbar,
+  AppBar,
   List,
   ListItem,
-  ListItemText,
-  AppBar,
-  Toolbar,
+  ListItemText
 } from '@mui/material';
 import { styled } from '@mui/material/styles';
 import { Mic, Send, Upload } from '@mui/icons-material';
@@ -19,6 +19,7 @@ import MessageBubble from './MessageBubble';
 import FileUpload from './FileUpload';
 import { useChat } from '../hooks/useChat';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
+import LoadingMessage from './LoadingMessage';
 
 const ChatContainer = styled(Box)(({ theme }) => ({
   height: 'calc(100vh - 128px)',
@@ -26,6 +27,8 @@ const ChatContainer = styled(Box)(({ theme }) => ({
   flexDirection: 'column',
   gap: theme.spacing(2),
   padding: theme.spacing(2),
+  position: 'relative',
+  zIndex: 0
 }));
 
 const MessagesContainer = styled(Paper)(({ theme }) => ({
@@ -46,8 +49,19 @@ const InputContainer = styled(Box)(({ theme }) => ({
   bottom: 0,
 }));
 
+const StyledToolbar = styled(Toolbar)({
+  display: 'flex',
+  justifyContent: 'center',
+  position: 'relative',
+});
+
+const UploadButton = styled(IconButton)({
+  position: 'absolute',
+  right: 16,
+});
+
 function ChatInterface() {
-  const { messages, sendMessage, setMessages } = useChat();
+  const { messages, sendMessage, setMessages, isLoading } = useChat();
   const { isListening, startListening, stopListening, transcript } = useSpeechRecognition();
   const [input, setInput] = useState('');
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -61,10 +75,22 @@ function ChatInterface() {
     scrollToBottom();
   }, [messages]);
 
+  // Update local input if speech recognition captured text
+  useEffect(() => {
+    if (transcript && isListening) {
+      setInput(prev => prev + ' ' + transcript);
+    }
+  }, [transcript, isListening]);
+
   const handleSend = async () => {
     if (input.trim()) {
-      await sendMessage(input);
-      setInput('');
+      const currentInput = input;
+      setInput(''); // Clear input immediately
+      try {
+        await sendMessage(currentInput);
+      } catch (error) {
+        console.error('Failed to send message:', error);
+      }
     }
   };
 
@@ -76,21 +102,25 @@ function ChatInterface() {
   };
 
   const handleFileUpload = (fileData) => {
-    setMessages(prev => [...prev, {
-      type: 'system',
-      content: `File uploaded: ${fileData.filename}`
-    }]);
+    // Example usage: inject a "system" note about file upload
+    setMessages(prev => [
+      ...prev,
+      {
+        role: 'system',
+        content: `File uploaded: ${fileData.filename}`
+      }
+    ]);
   };
 
   return (
     <Box>
       <AppBar position="static">
-        <Toolbar>
+        <StyledToolbar>
           <Typography variant="h6">Alfred — Your Future AI Agent</Typography>
-          <IconButton color="inherit" onClick={() => setIsDrawerOpen(true)}>
+          <UploadButton color="inherit" onClick={() => setIsDrawerOpen(true)}>
             <Upload />
-          </IconButton>
-        </Toolbar>
+          </UploadButton>
+        </StyledToolbar>
       </AppBar>
 
       <Container maxWidth="lg">
@@ -103,6 +133,7 @@ function ChatInterface() {
                 isUser={message.role === 'user'}
               />
             ))}
+            {isLoading && <LoadingMessage />}
             <div ref={messagesEndRef} />
           </MessagesContainer>
 
@@ -135,7 +166,7 @@ function ChatInterface() {
         open={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
       >
-        <FileUpload onFileUpload={handleFileUpload} onClose={() => setIsDrawerOpen(false)} />
+        <FileUpload onFileUpload={handleFileUpload} />
       </Drawer>
     </Box>
   );
