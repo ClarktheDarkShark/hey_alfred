@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages
 from typing_extensions import Annotated, TypedDict
+from pydantic import BaseModel
 
 
 class GraphConfig(TypedDict):
@@ -34,6 +35,17 @@ class State(TypedDict):
     """Documents retrieved from RAG for answering the query."""
     graded_documents: Optional[List[str]] = None
     """Optional: Graded documents for relevance scoring."""
+
+
+class RetrieveInput(BaseModel):
+    state: Dict[str, Any]
+
+class IngestInput(BaseModel):
+    filename: str
+
+class ToolCallInput(BaseModel):
+    name: str
+    arguments: Dict[str, Any]
 
 
 __all__ = [

@@ -1,3 +1,4 @@
+// useChat.js
 import { useState } from 'react';
 import { sendMessage as apiSendMessage } from '../services/api';
 
@@ -14,9 +15,9 @@ export const useChat = () => {
       setMessages(allMessages);
       setIsLoading(true);
       
-      // Call the backend
+      // Call the backend chat API
       const data = await apiSendMessage(allMessages);
-      // The front-end expects data.response
+      // The frontend expects data.response
       setMessages(prev => [...prev, { role: 'assistant', content: data.response }]);
       return data;
     } catch (error) {

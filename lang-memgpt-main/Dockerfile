@@ -3,16 +3,18 @@ FROM node:alpine AS frontend-build
 
 WORKDIR /app/frontend
 COPY new-alfred-ui/package*.json ./
-COPY new-alfred-ui/public ./public
 
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --production
 
+# Copy the entire src directory first
 COPY new-alfred-ui/src ./src
 COPY new-alfred-ui/public ./public
-RUN ls -la ./public
 
-RUN npm run build
+# Add logging to debug the build process
+RUN echo "Contents of /app/frontend:" && ls -la && \
+    npm run build && \
+    echo "Contents of /app/frontend/build:" && ls -la build
 
 
 # Use slim Python image and combine installation steps
@@ -74,7 +76,8 @@ RUN poetry config virtualenvs.create false && \
     poetry install --only main --no-root --no-interaction
 
 # Copy Python environment and frontend build
-COPY --from=frontend-build /app/frontend/build /app/static
+COPY --from=frontend-build /app/frontend/build/static /app/static/static
+COPY --from=frontend-build /app/frontend/build/* /app/static/
 
 # Copy application code
 COPY . /app/

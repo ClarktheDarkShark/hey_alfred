@@ -1,9 +1,12 @@
+// FileUpload.jsx
 import React, { useState } from 'react';
 import { Button, Box, Typography, CircularProgress } from '@mui/material';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
+import { uploadFile } from '../services/api'; // Make sure the path is correct
 
-const FileUpload = ({ onFileUpload }) => {
+const FileUpload = ({ onFileUpload, onClose }) => {
   const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState(null);
 
   const handleFileChange = async (event) => {
     const file = event.target.files[0];
@@ -11,22 +14,21 @@ const FileUpload = ({ onFileUpload }) => {
 
     try {
       setUploading(true);
+      setError(null);
+      
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await fetch(`${process.env.REACT_APP_API_URL}/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error('Upload failed');
-      }
-
-      const data = await response.json();
+      // Debug logging
+      console.log('Uploading file using secure API URL');
+      
+      const data = await uploadFile(formData);
       onFileUpload && onFileUpload(data);
+      onClose && onClose();
+      
     } catch (error) {
       console.error('Upload error:', error);
+      setError(error.message || 'Failed to upload file');
     } finally {
       setUploading(false);
     }
@@ -51,6 +53,11 @@ const FileUpload = ({ onFileUpload }) => {
           {uploading ? 'Uploading...' : 'Upload Document'}
         </Button>
       </label>
+      {error && (
+        <Typography color="error" variant="body2" sx={{ mt: 1 }}>
+          Error: {error}
+        </Typography>
+      )}
       <Typography variant="caption" display="block" sx={{ mt: 1 }}>
         Supported formats: PDF, CSV, Excel, Word
       </Typography>

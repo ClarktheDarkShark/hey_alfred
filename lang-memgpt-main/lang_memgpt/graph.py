@@ -1,23 +1,14 @@
-# graph.py
-"""Lang-MemGPT: A Long-Term Memory Agent.
+"""
+Lang-MemGPT: A Long-Term Memory Agent.
 
 This module implements an agent with long-term memory capabilities using LangGraph.
-The agent can store, retrieve, and use memories to enhance its interactions with users.
-
-Key Components:
-1. Memory Types: Core (always available) and Recall (contextual/semantic).
-2. Tools: For saving and retrieving memories + performing other tasks (METAR, TAF, etc.).
-3. Memory Vector Database: Uses Pinecone for both core and recall memories.
-4. RAG Vector Database: For querying PDF and CSV documents. Uses Chroma or other vector DB.
-
-Configuration: Requires Pinecone and OpenAI API keys (see README for setup).
-
-This code integrates the original multi-step RAG pipeline with a simplified UI-facing
-`process_chat` function, ensuring both the TAF tool and the entire RAG flow are available.
+It supports memory storage/retrieval and a RAG pipeline (e.g. RETRIEVE on document queries)
+and exposes a simple UI-facing `process_chat` function.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -28,6 +19,7 @@ import sys
 import langsmith
 import tiktoken
 from langchain.chat_models import init_chat_model
+from lang_memgpt.RAG_Structure.route_question import route_question
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 from langchain_core.messages.utils import get_buffer_string
@@ -38,31 +30,27 @@ from langchain_core.runnables.config import (
     get_executor_for_config,
 )
 from langchain_core.tools import tool
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import START, END, StateGraph
 from langgraph.prebuilt import ToolNode
 from typing_extensions import Literal
 
-# -- Local modules
 from lang_memgpt import _constants as constants
 from lang_memgpt import _schemas as schemas
 from lang_memgpt import _settings as settings
 from lang_memgpt import _utils as utils
 
-# -- RAG pipeline logic
-# Instead of importing "generate" from __init__.py, we import it directly:
+# RAG pipeline imports
 from lang_memgpt.RAG_Structure.decision_logic import decide_to_generate
 from lang_memgpt.RAG_Structure.nodes.generate import generate
-# route_question, retrieve, etc. are also imported directly from their modules:
-from lang_memgpt.RAG_Structure.nodes.ingestion import ingest_data as _ingest_data
-from lang_memgpt.RAG_Structure.nodes.retrieve import retrieve as _retrieve
-from lang_memgpt.RAG_Structure.nodes.grade_documents import grade_documents as _grade_documents
-from lang_memgpt.RAG_Structure.nodes.web_search import web_search as _web_search
-from lang_memgpt.RAG_Structure.route_question import route_question as _route_question
-from lang_memgpt.RAG_Structure.grade_generation import (
-    grade_generation_grounded_in_documents_and_question as _grade_generation
-)
+from lang_memgpt.RAG_Structure.nodes.ingestion import ingest_data
+from lang_memgpt.RAG_Structure.nodes.retrieve import retrieve
+from lang_memgpt.RAG_Structure.nodes.grade_documents import grade_documents
+from lang_memgpt.RAG_Structure.nodes.web_search import web_search
+from lang_memgpt.RAG_Structure.chains.router import question_router
+from lang_memgpt.RAG_Structure.chains import answer_grader, generation, hallucination_grader, retrieval_grader, router
+from lang_memgpt.RAG_Structure.grade_generation import grade_generation_grounded_in_documents_and_question as grade_generation
 
-# -- Tools from lang_memgpt/tools
+# Tools from lang_memgpt/tools
 from lang_memgpt.tools import (
     get_metar_data,
     get_taf_data,
@@ -72,87 +60,25 @@ from lang_memgpt.tools import (
     fetch_latest_news
 )
 
+# Configure logging to stdout
 logging.basicConfig(
-    level=logging.DEBUG,  # Use DEBUG to capture all logs
-    stream=sys.stdout,    # Ensure logs are sent to stdout
+    level=logging.DEBUG,
+    stream=sys.stdout,
     format="%(asctime)s %(levelname)s %(name)s %(message)s"
 )
-
 logger = logging.getLogger("memory")
-# logging.basicConfig(level=logging.DEBUG)
 
-
-# ------------------------------------------------------------------------------
-# Fix #1: Provide docstrings (or "description") for all RAG-related tools
-# ------------------------------------------------------------------------------
-@tool
-def wrapped_ingest_data(*args, **kwargs):
-    """
-    Ingest user-supplied documents for analysis and storage.
-    This docstring ensures no 'Function must have a docstring' error occurs.
-    """
-    return ingest_data(*args, **kwargs)
-
-@tool
-def wrapped_route_question(*args, **kwargs):
-    """
-    Route a user query to the correct RAG branch (retrieve or web search).
-    """
-    return route_question(*args, **kwargs)
-
-@tool
-def wrapped_retrieve(*args, **kwargs):
-    """
-    Retrieve relevant documents from the vector DB based on a query.
-    """
-    return retrieve(*args, **kwargs)
-
-@tool
-def wrapped_web_search(*args, **kwargs):
-    """
-    Perform a web search for additional info on the query.
-    """
-    return web_search(*args, **kwargs)
-
-@tool
-def wrapped_grade_documents(*args, **kwargs):
-    """
-    Grade candidate documents for relevance and correctness.
-    """
-    return grade_documents(*args, **kwargs)
-
-@tool
-def wrapped_grade_generation(*args, **kwargs):
-    """
-    Grade the AI-generated answer for factual grounding given the question and relevant documents.
-    """
-    return grade_generation_grounded_in_documents_and_question(*args, **kwargs)
-
-
-# ------------------------------------------------------------------------------
-# A small non-zero vector to avoid certain DB issues (workaround).
+# A small non-zero vector workaround
 _EMPTY_VEC = [0.00001] * 1536
 
-# Initialize the TavilySearchResults tool
+# Initialize the search tool
 search_tool = TavilySearchResults(max_results=1)
 tools = [search_tool]
 
-
-#
-# -----------------------------
-#  Memory & Core Tools
-# -----------------------------
-#
 @tool
 async def save_recall_memory(memory: str) -> str:
     """
     Save a memory to the database for later semantic retrieval.
-
-    Args:
-        memory: The memory to be saved.
-
-    Returns:
-        The saved memory.
     """
     config = ensure_config()
     configurable = utils.ensure_configurable(config)
@@ -163,37 +89,27 @@ async def save_recall_memory(memory: str) -> str:
         user_id=configurable["user_id"],
         event_id=str(uuid.uuid4()),
     )
-    documents = [
-        {
-            "id": path,
-            "values": vector,
-            "metadata": {
-                constants.PAYLOAD_KEY: memory,
-                constants.PATH_KEY: path,
-                constants.TIMESTAMP_KEY: current_time,
-                constants.TYPE_KEY: "recall",
-                "user_id": configurable["user_id"],
-            },
-        }
-    ]
+    documents = [{
+        "id": path,
+        "values": vector,
+        "metadata": {
+            constants.PAYLOAD_KEY: memory,
+            constants.PATH_KEY: path,
+            constants.TIMESTAMP_KEY: current_time,
+            constants.TYPE_KEY: "recall",
+            "user_id": configurable["user_id"],
+        },
+    }]
     utils.get_index().upsert(
         vectors=documents,
         namespace=settings.SETTINGS.pinecone_namespace,
     )
     return memory
 
-
 @tool
 def search_memory(query: str, top_k: int = 5) -> List[str]:
     """
     Search for memories in the database based on semantic similarity.
-
-    Args:
-        query: The search query.
-        top_k: Number of results to return.
-
-    Returns:
-        A list of relevant memories.
     """
     config = ensure_config()
     configurable = utils.ensure_configurable(config)
@@ -217,21 +133,13 @@ def search_memory(query: str, top_k: int = 5) -> List[str]:
         memories = [m["metadata"][constants.PAYLOAD_KEY] for m in matches]
     return memories
 
-
 @langsmith.traceable
 def fetch_core_memories(user_id: str) -> Tuple[str, List[str]]:
     """
     Fetch core memories for a specific user.
-
-    Args:
-        user_id: The ID of the user.
-
-    Returns:
-        A tuple of (path, list of core memories).
     """
     path = constants.PATCH_PATH.format(user_id=user_id)
     response = utils.get_index().fetch(
-        # "core_memories" replaced settings.SETTINGS.pinecone_namespace
         ids=[path], namespace="core_memories"
     )
     memories = []
@@ -241,18 +149,10 @@ def fetch_core_memories(user_id: str) -> Tuple[str, List[str]]:
         memories = json.loads(payload)["memories"]
     return path, memories
 
-
 @tool
 def store_core_memory(memory: str, index: Optional[int] = None) -> str:
     """
     Store a core memory in the database.
-
-    Args:
-        memory: The memory to store.
-        index: The index at which to store the memory (optional).
-
-    Returns:
-        A confirmation message.
     """
     config = ensure_config()
     configurable = utils.ensure_configurable(config)
@@ -263,33 +163,24 @@ def store_core_memory(memory: str, index: Optional[int] = None) -> str:
         memories[index] = memory
     else:
         memories.insert(0, memory)
-    documents = [
-        {
-            "id": path,
-            "values": _EMPTY_VEC,
-            "metadata": {
-                constants.PAYLOAD_KEY: json.dumps({"memories": memories}),
-                constants.PATH_KEY: path,
-                constants.TIMESTAMP_KEY: datetime.now(tz=timezone.utc),
-                constants.TYPE_KEY: "core",
-                "user_id": configurable["user_id"],
-            },
-        }
-    ]
+    documents = [{
+        "id": path,
+        "values": _EMPTY_VEC,
+        "metadata": {
+            constants.PAYLOAD_KEY: json.dumps({"memories": memories}),
+            constants.PATH_KEY: path,
+            constants.TIMESTAMP_KEY: datetime.now(tz=timezone.utc),
+            constants.TYPE_KEY: "core",
+            "user_id": configurable["user_id"],
+        },
+    }]
     utils.get_index().upsert(
         vectors=documents,
-        # "core_memories" replaced settings.SETTINGS.pinecone_namespace
         namespace="core_memories"
     )
     return "Memory stored."
 
-
-#
-# -----------------------------
-#  Combine Tools & Prompt
-# -----------------------------
-#
-# Now re-define a single all_tools with guaranteed docstrings:
+# Combine all tools into one list (ensuring every tool has a docstring)
 all_tools = tools + [
     save_recall_memory,
     search_memory,
@@ -300,15 +191,23 @@ all_tools = tools + [
     unit_converter,
     date_time_tool,
     fetch_latest_news,
-
-    # These wrapped versions each have a description/docstring:
-    wrapped_ingest_data,
-    wrapped_route_question,
-    wrapped_retrieve,
-    wrapped_web_search,
-    wrapped_grade_documents,
-    wrapped_grade_generation,
+    ingest_data,
+    route_question,
+    retrieve,
+    web_search,
+    grade_documents,
+    grade_generation,
 ]
+
+def ensure_docstring(func):
+    if not func.__doc__:
+        print(f"[TOOL DEBUG] Adding docstring to {func.__name__}", flush=True)
+        func.__doc__ = "No description provided."
+    if "(dict)" in func.__doc__:
+        print(f"Tool with (dict) in docstring: {func.__name__}", flush=True)
+    return func
+
+all_tools = [ensure_docstring(t) for t in all_tools]
 
 
 prompt = ChatPromptTemplate.from_messages(
@@ -342,14 +241,14 @@ prompt = ChatPromptTemplate.from_messages(
             " analogies.\n"
             "10. Recall past challenges or successes to inform current"
             " problem-solving.\n"
-            "11. Alfred can also process (i.e., ingest documents), index, and query PDFs, CSVs,"
-            " Excel, or Word docs stored in a dedicated document database for research.\n"
+            "11. Alfred can also process (i.e., ingest documents), index, and query PDF, CSV, Excel, and Word documents "
+            "stored in a dedicated document database for research and analysis tasks.\n"
             "12. Use document processing tools to analyze uploaded PDFs or Excel files and"
             " summarize key insights.\n"
             "13. For long or complex queries, break them into smaller parts and retrieve"
             " relevant document sections incrementally.\n"
-            "14. Use the 'RETRIEVE' tool only when queries explicitly reference external documents"
-            " such as PDFs, reports, or data analysis. Avoid using 'RETRIEVE' for general queries.\n"
+            "14. Use the retrieve tool when queries explicitly reference external documents"
+            " such as PDFs, reports, or data analysis. Avoid using retrieve for general queries.\n"
             "15. Before deciding to retrieve document data, evaluate whether the query explicitly mentions"
             " document analysis, files, or content extraction. Otherwise, default to responding directly or"
             " leveraging memory tools.\n"
@@ -360,6 +259,10 @@ prompt = ChatPromptTemplate.from_messages(
             "## Recall Memories\n"
             "Recall memories are contextually retrieved based on the current"
             " conversation:\n{recall_memories}\n\n"
+            "When handling document queries:"
+            "- Use 'retrieve' with both filename and query parameters"
+            "- Example: retrieve(filename=\"doc.pdf\", query=\"what is this about?\")"
+            "- Always include the document name in retrieval requests"
             "## Instructions\n"
             "Engage with the user naturally, as a trusted colleague or friend."
             " There's no need to explicitly mention your memory capabilities."
@@ -377,45 +280,58 @@ prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
+def prepare_tool_args(tool_name: str, raw_args: Dict[str, Any], last_human_message: str = None) -> Dict[str, Any]:
+    """Prepare and validate tool arguments."""
+    try:
+        print(f"[TOOL DEBUG] prepare_tool_args called for: {tool_name}", flush=True)
+        print(f"[TOOL DEBUG] Raw args: {raw_args}", flush=True)
+        print(f"[TOOL DEBUG] Last human message: {last_human_message}", flush=True)
 
-#
-# -----------------------------
-#  Agent Function
-# -----------------------------
-#
+        if tool_name == "retrieve":
+            try:
+                print("[TOOL DEBUG] Creating retrieve state", flush=True)
+                state = {"state": {"question": last_human_message or "Please provide information about the document"}}
+                print(f"[TOOL DEBUG] Created retrieve state: {state}", flush=True)
+                return state
+            except Exception as e:
+                print(f"[TOOL ERROR] Error creating retrieve state: {str(e)}", flush=True)
+                raise
+        return raw_args
+    except Exception as e:
+        print(f"[TOOL ERROR] Error in prepare_tool_args: {str(e)}", flush=True)
+        raise
+
 async def agent(state: schemas.State, config: RunnableConfig) -> schemas.State:
     """
     Process the current state and generate a response using the LLM.
 
     Args:
-        state: The current state containing messages/memories.
+        state: The current state containing messages and memories.
         config: The runtime configuration for the agent.
 
     Returns:
         The updated state with the agent's response.
     """
     logger.debug("Entering agent function")
-    print("Entering agent function", flush=True)
+    print("[GRAPH] Entering agent function", flush=True)
     configurable = utils.ensure_configurable(config)
     llm = init_chat_model(configurable["model"])
+    
+    # Ensure all tools have descriptions and check for "(dict)" in the docstring
+    for tool in all_tools:
+        if not tool.__doc__:
+            tool.__doc__ = "No description provided."
+        if "(dict)" in tool.__doc__:
+            print(f"Tool with (dict) in docstring: {tool.__name__}", flush=True)
+            
     bound = prompt | llm.bind_tools(all_tools)
+    # print(f"[GRAPH] Bound: {bound}", flush=True)
 
-    # Pull data from the state
     messages = state.get("messages", [])
     core_memories = state.get("core_memories", [])
     recall_memories = state.get("recall_memories", [])
     current_time = datetime.now(tz=timezone.utc).isoformat()
 
-    logger.debug(f"Messages: {messages}")
-    logger.debug(f"Core memories: {core_memories}")
-    logger.debug(f"Recall memories: {recall_memories}")
-    logger.debug(f"Current time: {current_time}")
-    print(f"Messages: {messages}", flush=True)
-    print(f"Core memories: {core_memories}", flush=True)
-    print(f"Recall memories: {recall_memories}", flush=True)
-    print(f"Current time: {current_time}", flush=True)
-
-    # Invoke the prompt + model
     prediction = await bound.ainvoke({
         "messages": messages,
         "core_memories": "\n".join(core_memories),
@@ -423,37 +339,40 @@ async def agent(state: schemas.State, config: RunnableConfig) -> schemas.State:
         "current_time": current_time,
     })
 
-    logger.debug(f"Prediction: {prediction}")
-    print(f"Prediction: {prediction}", flush=True)
+    print(f"[GRAPH] Prediction: {prediction}", flush=True)
 
-    # Return the new state
+    # Log any tool calls if they are provided in the prediction.
+    tool_calls = []
+    if isinstance(prediction, AIMessage):
+        tool_calls = prediction.additional_kwargs.get("tool_calls", [])
+    elif isinstance(prediction, dict):
+        tool_calls = prediction.get("additional_kwargs", {}).get("tool_calls", [])
+    else:
+        print("[GRAPH] Unknown prediction structure; unable to extract tool calls.", flush=True)
+
+    for tc in tool_calls:
+        print(f"[GRAPH] [TOOL CALL] Name: {tc['function']['name']} Arguments: {tc['function']['arguments']}", flush=True)
+
     return {
         "messages": prediction,
         "core_memories": core_memories,
         "recall_memories": recall_memories
     }
 
-
-#
-# -----------------------------
-#  Memory Loader
-# -----------------------------
-#
 def load_memories(state: schemas.State, config: RunnableConfig) -> schemas.State:
     """
     Load core and recall memories for the current conversation.
 
     Args:
-        state: The current conversation state (messages, etc.).
+        state: The current state containing messages.
         config: The runtime configuration.
 
     Returns:
-        The updated state with loaded memories.
+        An updated state with loaded core and recall memories.
     """
     configurable = utils.ensure_configurable(config)
     user_id = configurable["user_id"]
 
-    # Convert conversation to string (truncated) for memory lookup
     tokenizer = tiktoken.encoding_for_model("gpt-4o")
     convo_str = get_buffer_string(state.get("messages", []))
     convo_str = tokenizer.decode(tokenizer.encode(convo_str)[:2048])
@@ -463,279 +382,202 @@ def load_memories(state: schemas.State, config: RunnableConfig) -> schemas.State
             executor.submit(fetch_core_memories, user_id),
             executor.submit(search_memory.invoke, convo_str),
         ]
-        # fetch_core_memories returns (path, core_mem_list)
         _, core_memories = futures[0].result()
         recall_memories = futures[1].result()
 
-    # Merge the newly retrieved memories into the state
     return {
         "core_memories": core_memories,
         "recall_memories": recall_memories,
     }
 
-
-#
-# -----------------------------
-#  Router / Tools
-# -----------------------------
-#
-def route_tools(state: schemas.State) -> Literal["tools", "ROUTER", "__end__"]:
-    """
-    Decide whether to invoke tools, RAG routing, or end conversation.
+def route_tools(state: schemas.State) -> Literal["tools", "__end__"]:
+    """Route queries to general tools, retrieve, or end the conversation.
 
     Args:
-        state: The current state of the conversation.
+        state (schemas.State): The current state of the conversation.
 
     Returns:
-        "tools" if a general tool should be called,
-        "ROUTER" if the route_question node should be triggered,
-        or "__end__" if no tool usage is requested.
+        Literal["tools", "__end__"]: The next step in the graph.
     """
     msg = state["messages"][-1]
 
     # Check if the query triggers any tool calls
-    if getattr(msg, "tool_calls", None):
-        calls = [tc["name"] for tc in msg.tool_calls]
-        if "route_question" in calls:
-            return "ROUTER"
-        if "retrieve" in calls:
-            return "RETRIEVE"
+    if msg.tool_calls:
+        # Handle the ingest_data tool specifically
+        # if any(tool["name"] == "retrieve" for tool in msg.tool_calls):
+        #     return "RETRIEVE"
+        # All other tools
         return "tools"
 
+    # Default to ending the conversation
     return END
 
-
-#
-# -----------------------------
-#  Build the Graph
-# -----------------------------
-#
-from langgraph.graph import START
-
+# Build the graph.
 builder = StateGraph(schemas.State, schemas.GraphConfig)
 
-# Add nodes
 builder.add_node("load_memories", load_memories)
 builder.add_node("agent", agent)
 builder.add_node("tools", ToolNode(all_tools))
-builder.add_node("ROUTER", wrapped_route_question)
-builder.add_node("RETRIEVE", wrapped_retrieve)
-builder.add_node("GRADE_DOCUMENTS", wrapped_grade_documents)
-builder.add_node("GENERATE", generate)  # 'generate' already has docstrings
-builder.add_node("WEBSEARCH", wrapped_web_search)
+builder.add_node("RETRIEVE", retrieve)
 
-# Edges
+# Define the main flow: start -> load memories -> agent.
 builder.add_edge(START, "load_memories")
 builder.add_edge("load_memories", "agent")
+# After tool or RETRIEVE execution, flow returns to the agent.
 builder.add_edge("tools", "agent")
+builder.add_edge("RETRIEVE", "agent")
 
+# Conditionally route from the agent node.
 builder.add_conditional_edges(
     "agent",
     route_tools,
     {
         "tools": "tools",
-        "ROUTER": "ROUTER",
-        "RETRIEVE": "RETRIEVE",
         "__end__": END,
     }
 )
 
-# RAG flow after "ROUTER"
-builder.add_conditional_edges(
-    "ROUTER",
-    _route_question,  # returns "RETRIEVE" or "WEBSEARCH"
-    {
-        "RETRIEVE": "RETRIEVE",
-        "WEBSEARCH": "WEBSEARCH",
-        "__end__": END,
-    }
-)
-
-builder.add_edge("RETRIEVE", "GRADE_DOCUMENTS")
-builder.add_conditional_edges(
-    "GRADE_DOCUMENTS",
-    decide_to_generate,
-    {
-        "WEBSEARCH": "WEBSEARCH",
-        "GENERATE": "GENERATE",
-    },
-)
-builder.add_conditional_edges(
-    "GENERATE",
-    _grade_generation,
-    {
-        "not supported": "GENERATE",
-        "useful": "agent",
-        "not useful": "WEBSEARCH",
-    },
-)
-builder.add_edge("WEBSEARCH", "GENERATE")
-builder.add_edge("GENERATE", "agent")
-
-# Compile the graph
 memgraph = builder.compile()
 
-
-#
-# -----------------------------
-#  Main UI-facing Function
-# -----------------------------
-#
 async def process_chat(messages: List[Dict[str, str]], config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Process chat messages through the memory graph.
 
+    This function converts raw messages into typed messages, then invokes the graph.
+    If the graph returns a tool call (finish_reason == 'tool_calls'), it executes the tool,
+    appends the tool result to the conversation state, and re-invokes the graph until a final
+    assistant message is produced.
+
     Args:
-        messages: A list of message dicts with role/content. E.g.:
-                  [{"role": "user", "content": "Hello!"}, {...}, ...]
-        config: A dictionary of runtime configuration (e.g., {"user_id": "123", "model": "gpt-4"})
+        messages: A list of message dictionaries with keys "role" and "content".
+        config: A dictionary of runtime configuration.
+            (Optionally, include "already_ingested": True to force retrieval instead of ingestion
+             for files that are already ingested.)
 
     Returns:
-        A dict with {"response": "..."} containing the final assistant text.
+        A dict with {"messages": [{"role": "assistant", "content": final_text}]}.
     """
-    logger.debug("Entering process_chat function")
-    print("Entering process_chat function", flush=True)
-    logger.debug(f"Messages: {messages}")
-    print("Messages: {messages}", flush=True)
-    logger.debug(f"Config: {config}")
-    print(f"Config: {config}", flush=True)
-
-    # Convert raw "role"/"content" messages into typed messages
-    formatted_messages = []
-    for msg in messages:
-        role = msg["role"]
-        content = msg["content"]
-        if role == "user":
-            formatted_messages.append(HumanMessage(content=content))
-        elif role == "assistant":
-            formatted_messages.append(AIMessage(content=content))
-        elif role == "system":
-            formatted_messages.append(SystemMessage(content=content))
-        else:
-            # Fallback if some custom role is provided.
-            formatted_messages.append(HumanMessage(content=content))
-
-    logger.debug(f"Formatted messages: {formatted_messages}")
-    print(f"Formatted messages: {formatted_messages}", flush=True)
-
-    # Build the initial state
-    input_state = {
-        "messages": formatted_messages,
-    }
-
-    # Invoke the graph
-    result = await memgraph.ainvoke(input=input_state, config=config)
-    logger.debug(f"Result: {result}")
-    print(f"Result: {result}", flush=True)
-    
-    # Extract the final assistant text from result["messages"]
-    final_ai_content = ""
-    if "messages" in result and result["messages"]:
-        messages_val = result["messages"]
-        # If messages is a list, pick the last element; otherwise, use it directly.
-        if isinstance(messages_val, list):
-            last_msg = messages_val[-1]
-        else:
-            last_msg = messages_val
-        # Try to get the 'content' attribute; if not available, try the 'content' key (if it is a dict).
-        final_ai_content = getattr(last_msg, "content", None) or (
-            last_msg.get("content") if isinstance(last_msg, dict) else ""
-        )
-
-    # Return the "response" field so the frontend can do data.response
-    return {
-    "messages": [
-        {
-            "role": "assistant",
-            "content": final_ai_content
-        }
-    ]
-}
-
-
-#
-# -----------------------------
-#  Docstring Issue Detector
-# -----------------------------
-#
-import inspect
-
-def ensure_docstring(func):
-    """Inject a default docstring if one is missing."""
-    if not func.__doc__ or func.__doc__.strip() == "":
-        func.__doc__ = "No description provided."
-    return func
-
-def detect_and_fix_docstring_issues():
-    """
-    Detect and fix issues with function docstrings throughout the codebase.
-    """
-    logger = logging.getLogger(__name__)
-    
-    # Only include the base functions that are actually used
-    functions = [
-        save_recall_memory,
-        search_memory,
-        fetch_core_memories,
-        store_core_memory,
-        agent,
-        load_memories,
-        process_chat
-    ]
-
-    for func in functions:
-        try:
-            # If it's decorated/wrapped, get the real function
-            while hasattr(func, '__wrapped__'):
-                func = func.__wrapped__
-
-            docstring = inspect.getdoc(func)
-            if not docstring:
-                continue
-
-            # Basic check for 'Args:' or 'Returns:'
-            if 'Args:' not in docstring:
-                continue
-
-            # Try to parse out the Args: and Returns: sections
-            args_section = docstring.split('Args:')[1]
-            if 'Returns:' in args_section:
-                params_section = args_section.split('Returns:')[0]
+    # Convert raw messages into LangChain messages.
+    try:
+        formatted_messages = []
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"]
+            if role == "user":
+                formatted_messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                formatted_messages.append(AIMessage(content=content))
+            elif role == "system":
+                formatted_messages.append(SystemMessage(content=content))
             else:
-                params_section = args_section
+                formatted_messages.append(HumanMessage(content=content))
+        print(f"Formatted messages: {formatted_messages}", flush=True)
 
-            docstring_params = []
-            for line in params_section.split('\n'):
-                line = line.strip()
-                if ':' in line:
-                    param_name = line.split(':')[0].strip()
-                    docstring_params.append(param_name)
+        # Build initial state.
+        state = {"messages": formatted_messages}
+        _config = config  # pass through config as received
 
-            if not docstring_params:
-                continue
-
-            # Check function signature for parameter mismatch
+        # Loop until the agent produces a final answer (i.e. no pending tool call).
+        while True:
             try:
-                sig = inspect.signature(func)
-            except ValueError:
-                continue
+                print("[PROCESS DEBUG] Starting new iteration", flush=True)
+                result = await memgraph.ainvoke(input=state, config=_config)
+                
+                try:
+                    tool_calls = []
+                    print(f"[PROCESS DEBUG] Result type: {result}", flush=True)
+                    last_msg = result.get("messages", [])[-1] if isinstance(result.get("messages"), list) else result.get("messages")
+                    print(f"[PROCESS DEBUG] Last message type: {type(last_msg)}", flush=True)
+                    print(f"[PROCESS DEBUG] Last message: {last_msg}", flush=True)
+                    
+                    if hasattr(last_msg, "additional_kwargs"):
+                        print("[PROCESS DEBUG] Extracting tool_calls from additional_kwargs", flush=True)
+                        tool_calls = last_msg.additional_kwargs.get("tool_calls", [])
+                    elif isinstance(last_msg, dict):
+                        print("[PROCESS DEBUG] Extracting tool_calls from dict", flush=True)
+                        tool_calls = last_msg.get("additional_kwargs", {}).get("tool_calls", [])
+                    
+                    print(f"[PROCESS DEBUG] Found tool_calls: {tool_calls}", flush=True)
+                except Exception as e:
+                    print(f"[PROCESS ERROR] Error extracting tool calls: {str(e)}", flush=True)
+                    raise
 
-            # Example fix: if docstring says 'state' but signature uses 'input_state'
-            for param in docstring_params:
-                if param not in sig.parameters and param == "state":
-                    fixed_docstring = docstring.replace(
-                        f"{param}:", "input_state:"
-                    ).replace(
-                        f"{param} (dict)", "input_state (dict)"
-                    )
-                    func.__doc__ = fixed_docstring
-                    logger.info(f"Fixed docstring for function: replaced '{param}' with 'input_state'")
+                if tool_calls:
+                    tc = tool_calls[0]
+                    tool_name = tc["function"]["name"]
+                    
+                    try:
+                        print(f"[PROCESS DEBUG] Processing tool: {tool_name}", flush=True)
+                        tool_args = json.loads(tc["function"]["arguments"])
+                        print(f"[PROCESS DEBUG] Parsed tool arguments: {tool_args}", flush=True)
+                    except Exception as e:
+                        print(f"[PROCESS ERROR] Error parsing tool arguments: {str(e)}", flush=True)
+                        tool_args = {}
 
-        except Exception as e:
-            logger.warning(f"Skipping docstring check for function: {e}")
-            continue
+                    try:
+                        print("[PROCESS DEBUG] Looking for last human message", flush=True)
+                        last_human = next((
+                            (m.content if hasattr(m, "content") else m.get("content"))
+                            for m in reversed(state["messages"])
+                            if (hasattr(m, "role") and m.role == "user") or 
+                               (isinstance(m, dict) and m.get("role") == "user")
+                        ), "No message found")
+                        print(f"[PROCESS DEBUG] Found last human message: {last_human}", flush=True)
+                    except Exception as e:
+                        print(f"[PROCESS ERROR] Error finding last human message: {str(e)}", flush=True)
+                        last_human = ""
 
-# Now re-run ensure_docstring on everything in all_tools, just in case:
-all_tools = [ensure_docstring(t) for t in all_tools]
+                    if tool_name == "retrieve":
+                        try:
+                            print("[PROCESS DEBUG] Preparing retrieve tool arguments", flush=True)
+                            tool_args = prepare_tool_args(tool_name, tool_args, last_human)
+                            print(f"[PROCESS DEBUG] Prepared retrieve arguments: {tool_args}", flush=True)
+                        except Exception as e:
+                            print(f"[PROCESS ERROR] Error preparing retrieve arguments: {str(e)}", flush=True)
+                            raise
+
+                    try:
+                        print(f"[PROCESS DEBUG] Looking for tool function: {tool_name}", flush=True)
+                        tool_func = next((t for t in all_tools if t.__name__ == tool_name), None)
+                        if tool_func is None:
+                            raise ValueError(f"Tool {tool_name} not found")
+                        
+                        print(f"[PROCESS DEBUG] Executing tool with args: {tool_args}", flush=True)
+                        if asyncio.iscoroutinefunction(tool_func):
+                            tool_result = await tool_func(**tool_args)
+                        else:
+                            tool_result = tool_func(**tool_args)
+                        print(f"[PROCESS DEBUG] Tool execution successful: {str(tool_result)[:100]}...", flush=True)
+                    except Exception as e:
+                        print(f"[PROCESS ERROR] Error executing tool: {str(e)}", flush=True)
+                        raise
+
+                    # Append tool result as a system message to the conversation.
+                    state["messages"].append(SystemMessage(content=f"[Tool:{tool_name}] {tool_result}"))
+                    # Continue the loop so that the graph re-processes the updated state.
+                    continue
+                else:
+                    # No pending tool call. Update state messages and break.
+                    state["messages"] = result.get("messages")
+                    break
+
+            except Exception as e:
+                print(f"[PROCESS ERROR] Critical error in process_chat: {str(e)}", flush=True)
+                return {"messages": [{"role": "assistant", "content": f"I encountered an error: {str(e)}"}]}
+
+        # Extract final assistant text.
+        final_ai_content = ""
+        final_messages = state.get("messages", [])
+        if final_messages:
+            if isinstance(final_messages, list):
+                last_msg = final_messages[-1]
+            else:
+                last_msg = final_messages
+            final_ai_content = getattr(last_msg, "content", None) or (last_msg.get("content") if isinstance(last_msg, dict) else "")
+        
+        return {"messages": [{"role": "assistant", "content": final_ai_content}]}
+    except Exception as e:
+        print(f"[PROCESS_CHAT] Error: {e}", flush=True)
+        return {"messages": [{"role": "assistant", "content": f"An error occurred: {e}"}]}
 
 __all__ = ["memgraph", "process_chat"]

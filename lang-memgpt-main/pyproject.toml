@@ -43,6 +43,7 @@ SpeechRecognition = "^3.10.0"
 streamlit-audiorecorder = "0.0.2"  # Use exact version
 pyaudio = "^0.2.13"               # Add this instead of portaudio19-dev
 sounddevice = "0.4.6"             # Correct package name
+python-multipart = "^0.0.9"       # Add this line
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.4.10"

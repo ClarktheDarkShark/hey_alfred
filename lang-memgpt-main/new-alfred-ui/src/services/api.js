@@ -1,13 +1,32 @@
+// api.js
+
 const API_URL = process.env.REACT_APP_API_URL || 'https://alfred-demo-311fd5c8f0bf.herokuapp.com';
 
-// Ensure URL always uses HTTPS
+/**
+ * Ensures that the provided URL uses HTTPS.
+ * If the URL starts with 'http://', it is replaced with 'https://'.
+ *
+ * @param {string} url - The URL to secure.
+ * @returns {string} - The secure URL.
+ */
 const getSecureUrl = (url) => {
-  return url.replace('http://', 'https://');
+  if (url.startsWith('http://')) {
+    return url.replace('http://', 'https://');
+  }
+  return url;
 };
 
+/**
+ * Sends a chat message to the API and returns the response.
+ *
+ * @param {Array} messages - List of message objects with { role, content }.
+ * @param {object} [configurable={}] - Optional additional configuration.
+ * @returns {Promise<object>} - A promise that resolves to the JSON response.
+ */
 export const sendMessage = async (messages, configurable = {}) => {
   try {
-    const response = await fetch(getSecureUrl(`${API_URL}/api/chat`), {
+    const secureApiUrl = getSecureUrl(API_URL);
+    const response = await fetch(`${secureApiUrl}/api/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -15,12 +34,12 @@ export const sendMessage = async (messages, configurable = {}) => {
       body: JSON.stringify({
         messages: messages.map(msg => ({
           role: msg.role,
-          content: msg.content
+          content: msg.content,
         })),
         configurable: {
           user_id: 'default-user',
           model: 'gpt-4o',
-          ...configurable
+          ...configurable,
         }
       }),
     });
@@ -30,9 +49,39 @@ export const sendMessage = async (messages, configurable = {}) => {
       throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
     }
     
-    return await response.json(); // Must contain { response: "..." }
+    return await response.json(); // Expected to return an object like { response: "..." }
   } catch (error) {
     console.error('API Error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Uploads a file using form data to the API and returns the JSON result.
+ *
+ * @param {FormData} formData - The form data containing the file.
+ * @returns {Promise<object>} - A promise that resolves to the JSON response.
+ */
+export const uploadFile = async (formData) => {
+  try {
+    const secureApiUrl = getSecureUrl(API_URL);
+    const response = await fetch(`${secureApiUrl}/api/upload`, {
+      method: 'POST',
+      body: formData,
+      // Do not set the Content-Type header; let the browser set it with the proper boundary.
+      headers: {
+        'Accept': 'application/json',
+      }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || `Upload failed with status ${response.status}`);
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Upload API Error:', error);
     throw error;
   }
 };

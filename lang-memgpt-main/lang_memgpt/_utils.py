@@ -26,7 +26,7 @@ def ensure_configurable(config: RunnableConfig) -> schemas.GraphConfig:
     configurable = config.get("configurable", {})
     if not configurable:
         configurable = {
-            "model": "gpt-4",
+            "model": "gpt-4o",
             "user_id": "default_user",
             "thread_id": str(uuid.uuid4())
         }
