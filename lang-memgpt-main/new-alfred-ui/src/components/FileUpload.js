@@ -2,36 +2,53 @@
 import React, { useState } from 'react';
 import { Button, Box, Typography, CircularProgress } from '@mui/material';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
-import { uploadFile } from '../services/api'; // Make sure the path is correct
+import { sendMessage } from '../services/api';
 
-const FileUpload = ({ onFileUpload, onClose }) => {
+const FileUpload = ({ onChatUpdate, onClose, existingMessages = [] }) => {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
 
-  const handleFileChange = async (event) => {
+  const handleFileChange = (event) => {
     const file = event.target.files[0];
     if (!file) return;
 
-    try {
-      setUploading(true);
-      setError(null);
-      
-      const formData = new FormData();
-      formData.append('file', file);
+    const reader = new FileReader();
 
-      // Debug logging
-      console.log('Uploading file using secure API URL');
-      
-      const data = await uploadFile(formData);
-      onFileUpload && onFileUpload(data);
-      onClose && onClose();
-      
-    } catch (error) {
-      console.error('Upload error:', error);
-      setError(error.message || 'Failed to upload file');
-    } finally {
+    reader.onload = async () => {
+      try {
+        setUploading(true);
+        setError(null);
+
+        // Construct a chat message that carries the file data.
+        // The expected format (which the backend will parse) is:
+        // "File uploaded: <filename>
+        // Content: <DataURL>"
+        const fileMessage = {
+          role: 'user',
+          content: `File uploaded: ${file.name}\nContent: ${reader.result}`,
+        };
+
+        const messages = [...existingMessages, fileMessage];
+
+        const responseData = await sendMessage(messages);
+
+        onChatUpdate && onChatUpdate(responseData);
+        onClose && onClose();
+      } catch (err) {
+        console.error('Error during file upload submission:', err);
+        setError(err.message || 'File upload failed');
+      } finally {
+        setUploading(false);
+      }
+    };
+
+    reader.onerror = () => {
+      setError('Error reading file.');
       setUploading(false);
-    }
+    };
+
+    // Read file as a Data URL (base64 encoded)
+    reader.readAsDataURL(file);
   };
 
   return (

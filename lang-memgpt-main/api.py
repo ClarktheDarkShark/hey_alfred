@@ -2,10 +2,10 @@
 import os
 import sys
 import logging
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
+import base64
+from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any
 
@@ -46,6 +46,7 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup_event():
     """Run any startup tasks if needed."""
+    pass
 
 # Configure CORS (allow all origins for testing)
 app.add_middleware(
@@ -63,7 +64,58 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
-    print(f"[API CHAT] Received request with messages: {request.messages}", flush=True)
+    # Process any file upload messages from the conversation.
+    for idx, msg in enumerate(request.messages):
+        content = msg.get("content", "")
+        if msg.get("role") == "user" and content.startswith("File uploaded:"):
+            try:
+                # Expected format:
+                # File uploaded: filename.ext
+                # Content: data:<mime>;base64,<base64_string>
+                parts = content.split('\nContent:')
+                if len(parts) != 2:
+                    logger.error("Invalid file upload message format.")
+                    continue
+
+                header = parts[0].strip()
+                file_data = parts[1].strip()
+
+                # Extract filename (everything after "File uploaded:")
+                file_name = header.replace("File uploaded:", "").strip()
+
+                # Remove Data URL prefix if present (e.g., "data:application/pdf;base64,")
+                if file_data.startswith("data:"):
+                    comma_index = file_data.find(',')
+                    if comma_index != -1:
+                        file_data = file_data[comma_index+1:]
+
+                file_bytes = base64.b64decode(file_data)
+
+                # Determine the docs path (adjusting path as needed for your project structure)
+                base_dir = os.path.dirname(__file__)  # Current script directory
+                app_dir = os.path.abspath(os.path.join(base_dir, "../app"))  # Navigate to the app directory
+                docs_path = os.path.join(app_dir, "docs")  # Set the docs path to app/docs
+                if not os.path.exists(docs_path):
+                    os.makedirs(docs_path, exist_ok=True)
+
+                file_save_path = os.path.join(docs_path, file_name)
+                with open(file_save_path, "wb") as f:
+                    f.write(file_bytes)
+
+                print(f"Saved file {file_name} to {file_save_path} for ingestion.", flush=True)
+
+                request.messages.append({
+                    "role": "system",
+                    "content": f"load_docs: {file_name}"
+                })
+                # # Now, update the message so that the agent sees only the file name.
+                # # For example, change the message to "File uploaded: filename.ext"
+                request.messages[idx]["content"] = f"File uploaded: {file_name}"
+
+            except Exception as e:
+                logger.error(f"Error processing file upload message: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"File processing error: {str(e)}")
+    
     try:
         logger.info(f"Received chat request: messages={request.messages} configurable={request.configurable}")
         print(f"Received chat request: messages={request.messages} configurable={request.configurable}", flush=True)
@@ -85,7 +137,7 @@ async def chat(request: ChatRequest):
         has_previous_upload = any("File uploaded:" in msg.get("content", "") for msg in previous_messages)
         
         config["already_ingested"] = is_doc_query and has_previous_upload
-        print(f"[API CHAT] Set already_ingested to {config['already_ingested']}", flush=True)
+        logger.info(f"[API CHAT] Set already_ingested to {config['already_ingested']}")
         
         # Add context about files to the config
         config["context"] = {
@@ -93,12 +145,12 @@ async def chat(request: ChatRequest):
             "has_files": has_previous_upload
         }
         
-        print(f"[API CHAT] Processing chat with config: {config}", flush=True)
+        logger.info(f"[API CHAT] Processing chat with config: {config}")
         response = await process_chat(
             messages=request.messages,
             config=config
         )
-        print(f"[API CHAT] Got response: {response}", flush=True)
+        logger.info(f"[API CHAT] Got response: {response}")
         
         if response and response.get("messages"):
             last_message = response["messages"][-1]
@@ -109,47 +161,6 @@ async def chat(request: ChatRequest):
     except Exception as e:
         logger.error(f"[api.py] Error in chat: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
-    print(f"[API UPLOAD] Starting file upload process for: {file.filename}", flush=True)
-    try:
-        file_ext = os.path.splitext(file.filename)[1].lower()
-        if file_ext == '.pdf':
-            save_dir = PDF_DIR
-        elif file_ext == '.csv':
-            save_dir = CSV_DIR
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_ext}")
-
-        safe_filename = os.path.basename(file.filename)
-        file_path = os.path.join(save_dir, safe_filename)
-        
-        print(f"[API UPLOAD] Saving file to: {file_path}", flush=True)
-        print(f"[API UPLOAD] Directory exists: {os.path.exists(os.path.dirname(file_path))}", flush=True)
-        
-        # Save the file
-        contents = await file.read()
-        with open(file_path, "wb") as f:
-            f.write(contents)
-        
-        print(f"[API UPLOAD] File saved, size: {len(contents)} bytes", flush=True)
-        print(f"[API UPLOAD] File exists: {os.path.exists(file_path)}", flush=True)
-
-        print(f"[API UPLOAD] Starting ingestion for: {safe_filename}", flush=True)
-        ingest_result = await ingest_data.ainvoke({"filename": safe_filename})
-        print(f"[API UPLOAD] Ingestion completed with result: {ingest_result}", flush=True)
-
-        return JSONResponse(content={
-            "filename": safe_filename,
-            "status": "success",
-            "message": "File uploaded and ingested successfully",
-            "ingestion_result": ingest_result
-        })
-
-    except Exception as e:
-        print(f"[API UPLOAD] Error: {str(e)}", flush=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 # Mount static files for your frontend (adjust directory paths as needed)
 app.mount("/static", StaticFiles(directory="static/static"), name="static")

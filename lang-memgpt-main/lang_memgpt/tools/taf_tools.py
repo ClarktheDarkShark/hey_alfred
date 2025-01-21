@@ -23,7 +23,7 @@ async def get_taf_data(
         Optional[dict[str, Any]]: TAF data or error messages for each station.
 
     Example Usage:
-        get_taf_data(["JFK", "DCA"])
+        get_taf_data(["KJFK", "KDCA"])
     """
 
     # Aviation Weather API endpoint

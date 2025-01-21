@@ -49,39 +49,11 @@ export const sendMessage = async (messages, configurable = {}) => {
       throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
     }
     
-    return await response.json(); // Expected to return an object like { response: "..." }
+    return await response.json();
   } catch (error) {
     console.error('API Error:', error);
     throw error;
   }
 };
 
-/**
- * Uploads a file using form data to the API and returns the JSON result.
- *
- * @param {FormData} formData - The form data containing the file.
- * @returns {Promise<object>} - A promise that resolves to the JSON response.
- */
-export const uploadFile = async (formData) => {
-  try {
-    const secureApiUrl = getSecureUrl(API_URL);
-    const response = await fetch(`${secureApiUrl}/api/upload`, {
-      method: 'POST',
-      body: formData,
-      // Do not set the Content-Type header; let the browser set it with the proper boundary.
-      headers: {
-        'Accept': 'application/json',
-      }
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(errorText || `Upload failed with status ${response.status}`);
-    }
-    
-    return await response.json();
-  } catch (error) {
-    console.error('Upload API Error:', error);
-    throw error;
-  }
-};
+export default { sendMessage };

@@ -313,7 +313,7 @@ async def agent(state: schemas.State, config: RunnableConfig) -> schemas.State:
         The updated state with the agent's response.
     """
     logger.debug("Entering agent function")
-    print("[GRAPH] Entering agent function", flush=True)
+    print(f"[GRAPH] Entering agent function with state {state}", flush=True)
     configurable = utils.ensure_configurable(config)
     llm = init_chat_model(configurable["model"])
     
