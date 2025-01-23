@@ -1,12 +1,12 @@
-// FileUpload.jsx
 import React, { useState } from 'react';
 import { Button, Box, Typography, CircularProgress } from '@mui/material';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
-import { sendMessage } from '../services/api';
+import { useChat } from '../hooks/useChat';
 
-const FileUpload = ({ onChatUpdate, onClose, existingMessages = [] }) => {
+const FileUpload = ({ onClose }) => {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
+  const { sendMessage } = useChat(); // Use the global chat hook
 
   const handleFileChange = (event) => {
     const file = event.target.files[0];
@@ -19,21 +19,17 @@ const FileUpload = ({ onChatUpdate, onClose, existingMessages = [] }) => {
         setUploading(true);
         setError(null);
 
-        // Construct a chat message that carries the file data.
-        // The expected format (which the backend will parse) is:
-        // "File uploaded: <filename>
-        // Content: <DataURL>"
-        const fileMessage = {
-          role: 'user',
-          content: `File uploaded: ${file.name}\nContent: ${reader.result}`,
-        };
+        // Construct the file upload message.
+        // Format: "File uploaded: <filename>\nContent: <DataURL>"
+        const fileMessageContent = `File uploaded: ${file.name}\nContent: ${reader.result}`;
 
-        const messages = [...existingMessages, fileMessage];
+        // Await the API call.
+        await sendMessage(fileMessageContent);
 
-        const responseData = await sendMessage(messages);
-
-        onChatUpdate && onChatUpdate(responseData);
-        onClose && onClose();
+        // After a successful upload, close the uploader.
+        if (onClose) {
+          onClose();
+        }
       } catch (err) {
         console.error('Error during file upload submission:', err);
         setError(err.message || 'File upload failed');
@@ -47,7 +43,7 @@ const FileUpload = ({ onChatUpdate, onClose, existingMessages = [] }) => {
       setUploading(false);
     };
 
-    // Read file as a Data URL (base64 encoded)
+    // Read the file as a Data URL (base64 encoded)
     reader.readAsDataURL(file);
   };
 

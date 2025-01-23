@@ -273,8 +273,9 @@ prompt = ChatPromptTemplate.from_messages(
             " information you want to retain in the next conversation. If you"
             " do call tools, all text preceding the tool call is an internal"
             " message. Respond AFTER calling the tool, once you have"
-            " confirmation that the tool completed successfully.\n\n"
+            " confirmation that the tool completed successfully. Always provide responses in markdown format, using headers, bullets, and other formatting as approrpriate.\n\n"
             "Current system time: {current_time}\n\n",
+            
         ),
         ("placeholder", "{messages}"),
     ]
@@ -373,7 +374,7 @@ def load_memories(state: schemas.State, config: RunnableConfig) -> schemas.State
     configurable = utils.ensure_configurable(config)
     user_id = configurable["user_id"]
 
-    tokenizer = tiktoken.encoding_for_model("gpt-4o")
+    tokenizer = tiktoken.encoding_for_model("gpt-4o-mini")
     convo_str = get_buffer_string(state.get("messages", []))
     convo_str = tokenizer.decode(tokenizer.encode(convo_str)[:2048])
 

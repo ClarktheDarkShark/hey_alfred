@@ -1,4 +1,5 @@
 // Description: Main application file for Alfred
+// App.js
 
 import React from 'react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
