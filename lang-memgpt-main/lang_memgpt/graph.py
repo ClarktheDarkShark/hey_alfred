@@ -274,6 +274,7 @@ prompt = ChatPromptTemplate.from_messages(
             " do call tools, all text preceding the tool call is an internal"
             " message. Respond AFTER calling the tool, once you have"
             " confirmation that the tool completed successfully. Always provide responses in markdown format, using headers, bullets, and other formatting as approrpriate.\n\n"
+            # "Always provide the URL, if you use the web_search tool. The URL in the format `[{url}]({url})`.\n\n"
             "Current system time: {current_time}\n\n",
             
         ),
