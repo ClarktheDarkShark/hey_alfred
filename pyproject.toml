@@ -1,0 +1,79 @@
+[tool.poetry]
+name = "lang-memgpt"
+version = "0.0.1"
+description = "A long-term memory agent using LangGraph"
+authors = ["Your Name <your.email@example.com>"]
+# package-mode = false
+# readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.9.0,<3.9.7 || >3.9.7,<3.13"
+beautifulsoup4 = "^4.12.3"         # Added for HTML parsing
+pymupdf = "^1.25.1"
+pypdf = "^3.10.1"                     # Added for PyPDFLoader 
+python-dotenv = "1.0.1"
+langgraph = ">=0.2.56,<0.3.0"
+# Feel free to swap out for postgres or your favorite database.
+langchain-pinecone = "^0.1.1"
+pinecone-client = "^3.2.2"           # Added
+jsonpatch = "^1.33"
+dydantic = "^0.0.6"
+pytest-asyncio = "^0.23.7"
+# trustcall = "^0.0.4"
+langchain = "^0.2.8"             # Updated from "^0.2.6"
+langchain-openai = "0.1.10"
+pydantic-settings = "^2.3.4"
+langgraph-sdk = "^0.1.23"
+langchain-community = "^0.2.6"
+tavily-python = "^0.3.3"
+tiktoken = "^0.7.0"
+aiohttp = "^3.8.1"                   # Added for HTTP requests
+xmltodict = "^0.13.0"                # Optional for XML to JSON parsing
+numpy = "^1.26.0"                    # Added for calculator or future needs
+pandas = "^2.0.3"                     # Optional for advanced data handling
+scikit-learn = "^1.3.0"               # Added for RAG tool
+pyarrow = "^15.0.0"               # Added for Parquet support
+langchainhub = "^0.1.15"            # Added for LangChainHub
+black = "^24.4.2"                   # Added for code formatting
+isort = "^5.13.2"
+langchain-chroma = "^0.1.0"        # Added for LangChainChroma
+langchain-core = "^0.2.4"         # Added for LangChainCore for AI Message 
+streamlit = "^1.24.0"
+SpeechRecognition = "^3.10.0"
+streamlit-audiorecorder = "0.0.2"  # Use exact version
+# pyaudio = "^0.2.13"               # Add this instead of portaudio19-dev
+sounddevice = "0.4.6"             # Correct package name
+python-multipart = "^0.0.9"       # Add this line
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.4.10"
+mypy = "^1.10.0"
+pytest = "^8.2.2"
+langgraph-cli = "^0.1.43"
+
+[tool.ruff]
+lint.select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # isort
+    "D",    # pydocstyle
+    "D401", # First line should be in imperative mood
+]
+
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = 80
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D", "E501"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+

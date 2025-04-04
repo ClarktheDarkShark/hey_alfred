@@ -1,0 +1,36 @@
+# .dockerignore
+
+# Node modules and caches
+new-alfred-ui/node_modules
+**/node_modules
+new-alfred-ui/.cache
+
+tests/
+
+# Python cache & virtual environments
+*.pyc
+*.pyo
+*.pyd
+__pycache__
+env/
+venv/
+*.venv
+
+# Git and OS-specific
+.git
+.gitignore
+.DS_Store
+
+# Build artifacts
+new-alfred-ui/build
+dist/
+build/
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Additional exclusions
+.env
+.Python
+npm-debug.log
